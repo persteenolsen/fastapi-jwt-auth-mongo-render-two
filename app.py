@@ -2,8 +2,9 @@ import os
 from datetime import datetime, timedelta
 
 import uvicorn
+import bcrypt
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -14,9 +15,6 @@ from pydantic import BaseModel, Field
 # -----------------------------
 load_dotenv()
 
-# -----------------------------
-# ENV VARIABLES
-# -----------------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
@@ -24,21 +22,18 @@ ATLAS_URI = os.getenv("ATLAS_URI")
 DB_NAME = os.getenv("DB_NAME")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
+# NEW: dev mode switch
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+
 if not ATLAS_URI:
     raise ValueError("ATLAS_URI is missing")
 
-if not DB_NAME:
-    raise ValueError("DB_NAME is missing")
-
-if not COLLECTION_NAME:
-    raise ValueError("COLLECTION_NAME is missing")
-
 # -----------------------------
-# INIT APP
+# APP INIT
 # -----------------------------
 app = FastAPI(
-    title="FastAPI + JWT + MongoDB Atlas + Render",
-    description="FastAPI authentication using MongoDB Atlas hosted at Render",
+    title="FastAPI + JWT Auth + Render + MongoDB Atlas",
+    description="27-05-2026 - FastAPI using JWT Auth hosted at Render using MongoDB Atlas as the database",
     version="1.0.0",
     contact={
         "name": "Per Olsen",
@@ -47,12 +42,10 @@ app = FastAPI(
 )
 
 # -----------------------------
-# MONGODB CONNECTION
+# MONGODB
 # -----------------------------
 mongo_client = AsyncIOMotorClient(ATLAS_URI)
-
 db = mongo_client[DB_NAME]
-
 users_collection = db[COLLECTION_NAME]
 
 # -----------------------------
@@ -61,71 +54,61 @@ users_collection = db[COLLECTION_NAME]
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
-def create_token(username: str):
+# -----------------------------
+# PASSWORD HELPERS
+# -----------------------------
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
 
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+
+# -----------------------------
+# JWT
+# -----------------------------
+def create_token(username: str):
     payload = {
         "sub": username,
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }
 
-    return jwt.encode(
-        payload,
-        SECRET_KEY,
-        algorithm=ALGORITHM
-    )
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
 async def authenticate_user(username: str, password: str):
-
-    user = await users_collection.find_one(
-        {"username": username}
-    )
+    user = await users_collection.find_one({"username": username})
 
     if not user:
         return False
 
-    # Plain-text password comparison
-    # Recommended:
-    # use bcrypt hashing in production
-    if user["password"] != password:
+    if not verify_password(password, user["password"]):
         return False
 
     return user
 
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme)
-):
-
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
         username = payload.get("sub")
-
-        if username is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token"
-            )
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
         return username
 
     except JWTError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token"
-        )
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 # -----------------------------
-# REQUEST MODELS
+# MODELS
 # -----------------------------
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=5)
 
 
 # -----------------------------
@@ -133,43 +116,43 @@ class UserCreate(BaseModel):
 # -----------------------------
 @app.get("/")
 async def root():
-
     return {
-        "message": "FastAPI + JWT + MongoDB Atlas + Render"
+        "message": "FastAPI + JWT + MongoDB + bcrypt",
+        "dev_mode": DEV_MODE
     }
 
 
 # -----------------------------
-# CREATE USER
+# CREATE USER (DEV ONLY)
 # -----------------------------
-# Note: The endpoint is temporarily commented out to prevent accidental user creation. Uncomment to enable
-# # @app.post("/create-user")
+@app.post("/create-user")
 async def create_user(user: UserCreate):
 
-    existing_user = await users_collection.find_one(
-        {"username": user.username}
-    )
-
-    if existing_user:
+    # 🚨 BLOCK IN PRODUCTION
+    if not DEV_MODE:
         raise HTTPException(
-            status_code=400,
-            detail="Username already exists"
+            status_code=403,
+            detail="User creation disabled in production"
         )
+
+    existing = await users_collection.find_one({"username": user.username})
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+
+    hashed_pw = hash_password(user.password)
 
     new_user = {
         "username": user.username,
-        "password": user.password,
+        "password": hashed_pw,
         "created_at": datetime.utcnow()
     }
 
-    result = await users_collection.insert_one(
-        new_user
-    )
+    result = await users_collection.insert_one(new_user)
 
     return {
-        "message": "User created successfully",
-        "user_id": str(result.inserted_id),
-        "username": user.username
+        "message": "User created (DEV MODE)",
+        "user_id": str(result.inserted_id)
     }
 
 
@@ -177,63 +160,37 @@ async def create_user(user: UserCreate):
 # LOGIN
 # -----------------------------
 @app.post("/token")
-async def login(
-    form: OAuth2PasswordRequestForm = Depends()
-):
+async def login(form: OAuth2PasswordRequestForm = Depends()):
 
-    user = await authenticate_user(
-        form.username,
-        form.password
-    )
+    user = await authenticate_user(form.username, form.password)
 
     if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Bad credentials"
-        )
-
-    access_token = create_token(
-        form.username
-    )
+        raise HTTPException(status_code=401, detail="Bad credentials")
 
     return {
-        "access_token": access_token,
+        "access_token": create_token(form.username),
         "token_type": "bearer"
     }
 
 
 # -----------------------------
-# PROTECTED ROUTE
+# PROTECTED
 # -----------------------------
 @app.get("/protected")
-async def protected_route(
-    username: str = Depends(get_current_user)
-):
-
-    return {
-        "message": f"Hello, {username}! This is a protected route."
-    }
+async def protected(username: str = Depends(get_current_user)):
+    return {"message": f"Hello {username}"}
 
 
 # -----------------------------
-# HEALTH CHECK
+# HEALTH
 # -----------------------------
 @app.get("/health")
 async def health():
-
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}
 
 
 # -----------------------------
-# LOCAL DEVELOPMENT
+# RUN
 # -----------------------------
 if __name__ == "__main__":
-
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
