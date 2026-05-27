@@ -1,6 +1,6 @@
-# fastapi-jwt-auth-render-two
+# fastapi-jwt-auth-mongo-render-two
 
-Last updated:
+Last updated
 
 - 27-05-2026
 
