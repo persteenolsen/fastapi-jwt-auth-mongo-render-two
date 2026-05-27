@@ -142,7 +142,8 @@ async def root():
 # -----------------------------
 # CREATE USER
 # -----------------------------
-@app.post("/create-user")
+# Note: The endpoint is temporarily commented out to prevent accidental user creation. Uncomment to enable
+# # @app.post("/create-user")
 async def create_user(user: UserCreate):
 
     existing_user = await users_collection.find_one(
