@@ -4,6 +4,10 @@ Last updated:
 
 - 27-05-2026
 
+# Version
+
+At Render I use the PYTHON_VERSION environment variable to tell Render to use Python version 3.11. Locally I am using Python 3.12
+
 A production-ready authentication backend built with **FastAPI**, **MongoDB Atlas**, **JWT authentication**, and **bcrypt password hashing**, deployed on **Render**.
 
 ---
