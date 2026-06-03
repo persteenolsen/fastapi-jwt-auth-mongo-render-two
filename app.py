@@ -33,7 +33,7 @@ if not ATLAS_URI:
 # -----------------------------
 app = FastAPI(
     title="FastAPI + JWT Auth + Render + MongoDB Atlas",
-    description="27-05-2026 - FastAPI using JWT Auth hosted at Render using MongoDB Atlas as the database",
+    description="03-06-2026 - FastAPI using JWT Auth hosted at Render using MongoDB Atlas as the database",
     version="1.0.0",
     contact={
         "name": "Per Olsen",
